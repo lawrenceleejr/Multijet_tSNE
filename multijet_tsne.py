@@ -237,11 +237,14 @@ def identify_correct_splitting(jets: np.ndarray, splittings: list):
     """
     Identify the index of the truth-correct splitting using parent_pdg labels.
 
-    Returns the index into `splittings`, or None if truth is ambiguous:
-      - any selected jet has parent_pdg == 0 (ISR / unmatched)
-      - != 2 distinct non-zero parent_pdg values
-      - the two groups do not have equal size == len(jets) // 2
-      - self-conjugate parent (only one unique PDG among all jets)
+    Works when the two resonances have *different* non-zero parent_pdg values
+    (e.g. squark / anti-squark: +1000006 / -1000006).
+
+    Returns None (ambiguous) when:
+      - all parent_pdg are 0 (no truth info stored)
+      - only 1 distinct non-zero PDG (self-conjugate like gluinos: both = 1000021)
+      - the two PDGs don't each cover exactly n//2 jets
+      - the resulting groups aren't found in the splittings list
 
     Parameters
     ----------
@@ -255,15 +258,18 @@ def identify_correct_splitting(jets: np.ndarray, splittings: list):
     pdgs = jets[:, JET_PDG].astype(int)
     half = len(jets) // 2
 
-    # Reject if any jet is unmatched (pdg == 0)
-    if np.any(pdgs == 0):
-        return None
+    nonzero = pdgs[pdgs != 0]
+    if len(nonzero) == 0:
+        return None  # no truth info at all
 
-    counts = Counter(pdgs.tolist())
-    unique = [p for p in counts if p != 0]
+    counts = Counter(nonzero.tolist())
+    unique = list(counts.keys())
 
+    # Need exactly 2 distinct non-zero PDG values (particle / anti-particle)
     if len(unique) != 2:
         return None
+
+    # Each PDG must cover exactly half the jets (all jets must be signal jets)
     if counts[unique[0]] != half or counts[unique[1]] != half:
         return None
 
@@ -275,8 +281,27 @@ def identify_correct_splitting(jets: np.ndarray, splittings: list):
     try:
         return splittings.index(correct)
     except ValueError:
-        # Shouldn't happen if get_splittings is correct, but be safe
         return None
+
+
+def label_by_min_mass_asym(features: np.ndarray) -> int:
+    """
+    Heuristic label for self-conjugate resonances (e.g. gluinos) where
+    parent_pdg cannot distinguish the two decay chains.
+
+    For equal-mass pair production the correct 3+3 grouping should minimise
+    the fractional mass asymmetry between the two triplets:
+        m_asym = |m1 - m2| / (m1 + m2)
+
+    Parameters
+    ----------
+    features : (n_splittings, 15) array for one event
+
+    Returns
+    -------
+    int — index of the splitting with the smallest m_asym
+    """
+    return int(np.argmin(features[:, 3]))  # column 3 = m_asym
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -493,10 +518,11 @@ def run_tsne(features: np.ndarray, perplexity: float, seed: int, n_iter: int,
         )
 
     # PCA init is more stable and faster than random
+    # n_iter was renamed to max_iter in scikit-learn 1.2
     tsne = TSNE(
         n_components=2,
         perplexity=min(perplexity, n - 1),
-        n_iter=n_iter,
+        max_iter=n_iter,
         init="pca",
         learning_rate="auto",
         random_state=seed,
