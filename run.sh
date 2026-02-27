@@ -10,11 +10,13 @@
 # Examples:
 #   ./run.sh ./data/events.h5
 #   ./run.sh ./data/                          # all *.h5 files in directory
-#   ./run.sh ./data/ --max-events 2000 --perplexity 50
-#   ./run.sh ./data/ --output /output/my_plot.png
+#   ./run.sh ./data/ --max-events 2000
+#   ./run.sh ./data/ --algo tsne --perplexity 50
 #
-# The output plot lands in ./output/  (created automatically).
-# Pass --output /output/<filename>.png to customise the filename.
+# All output files land in ./output/  (created automatically):
+#   multijet_embedding.png   — embedding scatter plot
+#   embedding_slices.png     — per-feature slice plots
+#   umap_model.joblib        — fitted UMAP model for transform() on new data
 
 set -euo pipefail
 
@@ -34,13 +36,15 @@ Usage: ./run.sh <hdf5-file-or-directory> [options]
   <hdf5-file-or-directory>   Path to an HDF5 file or a directory of *.h5 files
 
 Options (passed to multijet_tsne.py):
-  --max-events N    Maximum events to process
-  --perplexity F    t-SNE perplexity (default: 30)
-  --output FILE     Output filename inside /output/ (default: tsne_multijet.png)
-  --no-normalize    Skip StandardScaler
-  --seed INT        Random seed (default: 42)
-  --n-iter INT      t-SNE iterations (default: 1000)
-  --verbose         Verbose per-file progress
+  --max-events N       Maximum events to process
+  --algo {tsne,umap}   Embedding algorithm (default: umap)
+  --n-neighbors N      UMAP n_neighbors (default: 15)
+  --min-dist F         UMAP min_dist    (default: 0.1)
+  --perplexity F       t-SNE perplexity (default: 30)
+  --no-normalize       Skip StandardScaler
+  --seed INT           Random seed (default: 42)
+  --n-iter INT         t-SNE iterations (default: 1000)
+  --verbose            Verbose per-file progress
 
 Build the Docker image first if you haven't already:
   docker build -t ${IMAGE_NAME} .
@@ -89,7 +93,9 @@ docker run --rm \
     -v "${OUTPUT_DIR}:/output" \
     "${IMAGE_NAME}" \
     "${CONTAINER_ARG}" \
-    --output /output/tsne_multijet.png \
+    --output      /output/multijet_embedding.png \
+    --slice-plot  /output/embedding_slices.png \
+    --umap-output /output/umap_model.joblib \
     "$@"
 
 echo ""
