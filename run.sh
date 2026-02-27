@@ -15,6 +15,7 @@
 #
 # All output files land in ./output/  (created automatically):
 #   multijet_embedding.png   — embedding scatter plot
+#   feature_coloring.png     — grid of scatters colored by each physics feature
 #   embedding_slices.png     — per-feature slice plots
 #   umap_model.joblib        — fitted UMAP model for transform() on new data
 
@@ -93,9 +94,10 @@ docker run --rm \
     -v "${OUTPUT_DIR}:/output" \
     "${IMAGE_NAME}" \
     "${CONTAINER_ARG}" \
-    --output      /output/multijet_embedding.png \
-    --slice-plot  /output/embedding_slices.png \
-    --umap-output /output/umap_model.joblib \
+    --output              /output/multijet_embedding.png \
+    --slice-plot          /output/embedding_slices.png \
+    --feature-color-plot  /output/feature_coloring.png \
+    --umap-output         /output/umap_model.joblib \
     "$@"
 
 echo ""

@@ -783,6 +783,82 @@ def plot_tsne(
         plt.close(fig)
 
 
+def plot_feature_coloring(
+    embedding: np.ndarray,
+    features: np.ndarray,
+    feature_names: list,
+    output_path: str,
+    algo: str = "UMAP",
+):
+    """
+    Grid of embedding scatter plots, each colored by one physics feature.
+
+    Each panel title shows the Spearman rank correlation (ρ) of that feature
+    with each embedding axis, giving a quantitative complement to the visual
+    spatial pattern.  This is the primary tool for interpreting what the
+    embedding axes mean in terms of physics.
+
+    Parameters
+    ----------
+    embedding     : (N, 2) embedding coordinates
+    features      : (N, F) raw physics feature matrix
+    feature_names : list of F feature name strings
+    output_path   : destination PNG path
+    algo          : algorithm name used for axis labels (default "UMAP")
+    """
+    from scipy.stats import spearmanr
+
+    n = len(feature_names)
+    ncols = 3
+    nrows = (n + ncols - 1) // ncols  # ceil(15 / 3) = 5
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(ncols * 4.5, nrows * 3.8),
+        constrained_layout=True,
+    )
+    axes_flat = list(axes.flat)
+
+    for i, name in enumerate(feature_names):
+        ax = axes_flat[i]
+        vals = features[:, i]
+        vmin, vmax = np.percentile(vals, [2, 98])  # clip outliers for colour scale
+
+        rho1, _ = spearmanr(vals, embedding[:, 0])
+        rho2, _ = spearmanr(vals, embedding[:, 1])
+
+        sc = ax.scatter(
+            embedding[:, 0], embedding[:, 1],
+            c=vals, cmap="RdBu_r", s=4, alpha=0.5,
+            vmin=vmin, vmax=vmax, linewidths=0, rasterized=True,
+        )
+        plt.colorbar(sc, ax=ax, pad=0.01, fraction=0.046)
+        ax.set_title(
+            f"{name}\nρ({algo}1)={rho1:+.2f}   ρ({algo}2)={rho2:+.2f}",
+            fontsize=8,
+        )
+        ax.set_xlabel(f"{algo} 1", fontsize=7)
+        ax.set_ylabel(f"{algo} 2", fontsize=7)
+        ax.tick_params(labelsize=6)
+
+    for ax in axes_flat[n:]:
+        ax.set_visible(False)
+
+    fig.suptitle(
+        f"Physics features projected onto {algo} embedding\n"
+        f"(ρ = Spearman rank correlation with each axis)",
+        fontsize=11,
+    )
+
+    try:
+        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"[done] Feature coloring plot saved to: {output_path}")
+    except IOError as exc:
+        print(f"[error] Could not write feature coloring plot: {exc}", file=sys.stderr)
+    finally:
+        plt.close(fig)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Surrogate model for t-SNE component 2
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1072,6 +1148,11 @@ def parse_args():
         "--n-slice-bins", type=int, default=3, metavar="N",
         help="Number of equal-frequency slices for --slice-plot (default: 3)",
     )
+    parser.add_argument(
+        "--feature-color-plot", default="feature_coloring.png", metavar="FILE.png",
+        help="Grid of embedding scatters colored by each physics feature, "
+             "with Spearman ρ in each panel title (default: feature_coloring.png)",
+    )
     return parser.parse_args()
 
 
@@ -1142,6 +1223,12 @@ def main():
     plot_tsne(embedding, labels, stats, args.output,
               perplexity=args.perplexity,
               algo=algo_label, algo_params=algo_params)
+
+    # Feature coloring grid
+    if args.feature_color_plot:
+        print(f"\n[info] Producing feature coloring plot...")
+        plot_feature_coloring(embedding, features, FEATURE_NAMES,
+                              args.feature_color_plot, algo=algo_label)
 
     # Export UMAP model if requested
     if args.algo == "umap" and args.umap_output:
