@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-multijet_tsne.py — t-SNE analysis of multijet LHC events for pair-produced resonances.
+multijet_tsne.py — UMAP/t-SNE analysis of multijet LHC events for pair-produced resonances.
 
 For each event, all ways to split jets into two triplets are enumerated.
-Features of each splitting are computed and fed into t-SNE.
+Features of each splitting are embedded with UMAP (default) or t-SNE.
 The plot highlights the truth-correct grouping (from parent_pdg labels) in red.
 
 Usage (via Docker — see run.sh):
@@ -12,13 +12,19 @@ Usage (via Docker — see run.sh):
 Direct usage:
     python multijet_tsne.py events.h5 [more.h5 ...] [options]
 
-Options:
-    --max-events N    Maximum events to process (default: all)
-    --perplexity F    t-SNE perplexity (default: 30)
-    --output FILE     Output plot path (default: tsne_multijet.png)
-    --no-normalize    Skip StandardScaler on features
-    --seed INT        Random seed (default: 42)
-    --n-iter INT      t-SNE iterations (default: 1000)
+Key options:
+    --algo {tsne,umap}   Embedding algorithm (default: umap)
+    --n-neighbors N      UMAP n_neighbors (default: 15)
+    --min-dist F         UMAP min_dist    (default: 0.1)
+    --umap-output FILE   Save fitted UMAP model for transform() on new data
+                         (default: umap_model.joblib)
+    --max-events N       Maximum events to process (default: all)
+    --output FILE        Output plot path (default: multijet_embedding.png)
+    --slice-plot FILE    Feature-slice plot path (default: embedding_slices.png)
+    --no-normalize       Skip StandardScaler on features
+    --seed INT           Random seed (default: 42)
+    --n-iter INT         t-SNE iterations (default: 1000) — ignored for UMAP
+    --perplexity F       t-SNE perplexity (default: 30)   — ignored for UMAP
 """
 
 import argparse
@@ -1016,8 +1022,8 @@ def parse_args():
         help="t-SNE perplexity (default: 30)",
     )
     parser.add_argument(
-        "--output", default="tsne_multijet.png", metavar="FILE",
-        help="Output plot path (default: tsne_multijet.png)",
+        "--output", default="multijet_embedding.png", metavar="FILE",
+        help="Output plot path (default: multijet_embedding.png)",
     )
     parser.add_argument(
         "--no-normalize", action="store_true",
@@ -1037,8 +1043,8 @@ def parse_args():
     )
     # ── Algorithm choice ───────────────────────────────────────────────────────
     parser.add_argument(
-        "--algo", choices=["tsne", "umap"], default="tsne",
-        help="Dimensionality-reduction algorithm (default: tsne)",
+        "--algo", choices=["tsne", "umap"], default="umap",
+        help="Dimensionality-reduction algorithm (default: umap)",
     )
     # UMAP options
     parser.add_argument(
@@ -1050,8 +1056,8 @@ def parse_args():
         help="UMAP min_dist — controls point packing in 2-D (default: 0.1)",
     )
     parser.add_argument(
-        "--umap-output", default=None, metavar="FILE.joblib",
-        help="Save fitted UMAP model (reducer + scaler) for out-of-sample transform",
+        "--umap-output", default="umap_model.joblib", metavar="FILE.joblib",
+        help="Save fitted UMAP model (reducer + scaler) for out-of-sample transform (default: umap_model.joblib)",
     )
     # ── Surrogate / slice outputs ───────────────────────────────────────────────
     parser.add_argument(
@@ -1059,7 +1065,7 @@ def parse_args():
         help="Write a standalone Python surrogate function for t-SNE component 2",
     )
     parser.add_argument(
-        "--slice-plot", default=None, metavar="FILE.png",
+        "--slice-plot", default="embedding_slices.png", metavar="FILE.png",
         help="Save feature-distribution plots sliced by t-SNE component 2",
     )
     parser.add_argument(
