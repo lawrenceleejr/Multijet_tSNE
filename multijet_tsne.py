@@ -54,8 +54,8 @@ LABEL_CORRECT =  1
 LABEL_AMBIG   = -1
 
 FEATURE_NAMES = [
-    "m_min", "m_max", "m_avg", "m_asym",
-    "pt_min", "pt_max", "pt_avg", "pt_asym",
+    "m_min_HT", "m_max_HT", "m_avg_HT", "m_asym",
+    "pt_min_HT", "pt_max_HT", "pt_avg_HT", "pt_asym",
     "dR_between",
     "dR_A_min", "dR_A_max", "dR_A_mean",
     "dR_B_min", "dR_B_max", "dR_B_mean",
@@ -179,15 +179,20 @@ def compute_splitting_features(
     vecs4: np.ndarray,
     group_a: tuple,
     group_b: tuple,
+    event_ht: float = 1.0,
 ) -> np.ndarray:
     """
     Compute the 15-feature vector for one (3+3) splitting.
 
+    Masses and pTs are divided by event_ht (scalar sum of all jet pTs) so
+    that all features are dimensionless and energy-scale invariant.
+
     Parameters
     ----------
-    jets  : (n, 7) full jet array for the event
-    vecs4 : (n, 4) precomputed 4-vectors [E, px, py, pz]
+    jets     : (n, 7) full jet array for the event
+    vecs4    : (n, 4) precomputed 4-vectors [E, px, py, pz]
     group_a, group_b : tuples of jet indices (length 3 each)
+    event_ht : H_T = scalar sum of all jet pTs in the event (GeV)
 
     Returns
     -------
@@ -218,15 +223,17 @@ def compute_splitting_features(
         phi_a, phi_b = phi_b, phi_a
         dR_a, dR_b   = dR_b, dR_a
 
-    m_min  = min(m_a,  m_b)
-    m_max  = max(m_a,  m_b)
-    m_avg  = (m_a + m_b) / 2.0
-    m_asym = (m_max - m_min) / (m_max + m_min + 1e-9)
+    scale = event_ht if event_ht > 1e-6 else 1.0   # guard against zero
 
-    pt_min  = min(pt_a,  pt_b)
-    pt_max  = max(pt_a,  pt_b)
-    pt_avg  = (pt_a + pt_b) / 2.0
-    pt_asym = (pt_max - pt_min) / (pt_max + pt_min + 1e-9)
+    m_min  = min(m_a,  m_b) / scale
+    m_max  = max(m_a,  m_b) / scale
+    m_avg  = (m_a + m_b) / 2.0 / scale
+    m_asym = abs(m_a - m_b) / (m_a + m_b + 1e-9)   # already dimensionless
+
+    pt_min  = min(pt_a,  pt_b) / scale
+    pt_max  = max(pt_a,  pt_b) / scale
+    pt_avg  = (pt_a + pt_b) / 2.0 / scale
+    pt_asym = (pt_max - pt_min) / (pt_max + pt_min + 1e-9)   # already dimensionless
 
     dR_between = delta_r(eta_a, phi_a, eta_b, phi_b)
 
@@ -387,11 +394,12 @@ def process_event(jets: np.ndarray, min_jets: int = 6, truth_groups=None):
     n_splits   = len(splittings)
 
     vecs4    = jets_to_4vectors(jets)
+    event_ht = float(jets[:, JET_PT].sum())   # scalar sum of all jet pTs
     features = np.zeros((n_splits, len(FEATURE_NAMES)), dtype=np.float32)
     labels   = np.full(n_splits, LABEL_WRONG, dtype=np.int8)
 
     for k, (ga, gb) in enumerate(splittings):
-        features[k] = compute_splitting_features(jets, vecs4, ga, gb)
+        features[k] = compute_splitting_features(jets, vecs4, ga, gb, event_ht)
 
     if truth_groups is not None:
         correct_idx = identify_correct_splitting_from_truth(
