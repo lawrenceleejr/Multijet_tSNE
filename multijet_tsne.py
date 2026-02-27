@@ -284,6 +284,36 @@ def identify_correct_splitting(jets: np.ndarray, splittings: list):
         return None
 
 
+def identify_correct_splitting_from_truth(
+    splittings: list,
+    truth_group_a: tuple,
+    truth_group_b: tuple,
+) -> int | None:
+    """
+    Identify the correct splitting index using explicit truth jet groups.
+
+    Parameters
+    ----------
+    splittings     : list of (group_a, group_b) tuples (sorted, canonical form)
+    truth_group_a  : sorted tuple of jet indices for the first decay chain
+    truth_group_b  : sorted tuple of jet indices for the second decay chain
+
+    Both groups are in the *post-sort* (pT-ordered) coordinate system.
+
+    Returns
+    -------
+    int or None (if the truth groups don't appear in the splittings list)
+    """
+    # Canonical form: the group containing sorted index 0 must be group_a
+    if 0 in truth_group_b:
+        truth_group_a, truth_group_b = truth_group_b, truth_group_a
+    candidate = (truth_group_a, truth_group_b)
+    try:
+        return splittings.index(candidate)
+    except ValueError:
+        return None
+
+
 def label_by_min_mass_asym(features: np.ndarray) -> int:
     """
     Heuristic label for self-conjugate resonances (e.g. gluinos) where
@@ -308,23 +338,35 @@ def label_by_min_mass_asym(features: np.ndarray) -> int:
 # Event processing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def select_valid_jets(jet_feats: np.ndarray, jet_mask: np.ndarray) -> np.ndarray:
-    """Apply the jet mask and return the valid jets sorted by pT (descending)."""
-    valid = jet_feats[jet_mask]
+def select_valid_jets(jet_feats: np.ndarray, jet_mask: np.ndarray):
+    """
+    Apply the jet mask and return the valid jets sorted by pT (descending).
+
+    Returns
+    -------
+    jets        : (n_valid, 7) array sorted by pT descending
+    orig_indices: (n_valid,) int array of original (pre-sort) jet indices
+    """
+    valid_mask = np.asarray(jet_mask, dtype=bool)
+    valid = jet_feats[valid_mask]
+    orig_indices = np.where(valid_mask)[0]
     if len(valid) == 0:
-        return valid
+        return valid, orig_indices
     order = np.argsort(valid[:, JET_PT])[::-1]
-    return valid[order]
+    return valid[order], orig_indices[order]
 
 
-def process_event(jets: np.ndarray, min_jets: int = 6):
+def process_event(jets: np.ndarray, min_jets: int = 6, truth_groups=None):
     """
     Process one event: enumerate all 3+3 splittings and compute features.
 
     Parameters
     ----------
-    jets     : (n_valid, 7) sorted-by-pT jet array
-    min_jets : minimum number of jets required (default 6)
+    jets        : (n_valid, 7) sorted-by-pT jet array
+    min_jets    : minimum number of jets required (default 6)
+    truth_groups: optional (group_a, group_b) tuple of sorted jet-index tuples
+                  in the pT-sorted coordinate system.  When provided it is used
+                  directly instead of the PDG-based heuristic.
 
     Returns
     -------
@@ -345,7 +387,13 @@ def process_event(jets: np.ndarray, min_jets: int = 6):
     for k, (ga, gb) in enumerate(splittings):
         features[k] = compute_splitting_features(jets, vecs4, ga, gb)
 
-    correct_idx = identify_correct_splitting(jets, splittings)
+    if truth_groups is not None:
+        correct_idx = identify_correct_splitting_from_truth(
+            splittings, truth_groups[0], truth_groups[1]
+        )
+    else:
+        correct_idx = identify_correct_splitting(jets, splittings)
+
     if correct_idx is None:
         labels[:] = LABEL_AMBIG
     else:
@@ -420,6 +468,32 @@ def load_and_process(files: list, max_events: int = None, verbose: bool = False)
 
                 jet_feats_all = f["jet_features"][:]   # (N, max_jets, 7)
                 jet_mask_all  = f["jet_mask"][:]        # (N, max_jets) bool
+
+                # Read explicit truth jet-group assignments when available.
+                # Expected layout: TARGETS/g1/{j1,j2,j3} and TARGETS/g2/{j1,j2,j3}
+                # each containing per-event original jet indices.
+                targets_g1 = None
+                targets_g2 = None
+                try:
+                    if (
+                        "TARGETS" in f
+                        and "g1" in f["TARGETS"]
+                        and "g2" in f["TARGETS"]
+                        and all(k in f["TARGETS/g1"] for k in ("j1", "j2", "j3"))
+                        and all(k in f["TARGETS/g2"] for k in ("j1", "j2", "j3"))
+                    ):
+                        targets_g1 = np.stack(
+                            [f["TARGETS/g1/j1"][:], f["TARGETS/g1/j2"][:], f["TARGETS/g1/j3"][:]],
+                            axis=1,
+                        ).astype(int)   # (N, 3)
+                        targets_g2 = np.stack(
+                            [f["TARGETS/g2/j1"][:], f["TARGETS/g2/j2"][:], f["TARGETS/g2/j3"][:]],
+                            axis=1,
+                        ).astype(int)   # (N, 3)
+                        if verbose:
+                            print(f"[info]   Found TARGETS/g1,g2 truth labels")
+                except Exception as exc:
+                    print(f"[warn] Could not read TARGETS from {fpath}: {exc}", file=sys.stderr)
         except Exception as exc:
             print(f"[warn] Failed to read {fpath}: {exc}", file=sys.stderr)
             continue
@@ -434,7 +508,7 @@ def load_and_process(files: list, max_events: int = None, verbose: bool = False)
                 break
             n_events_seen += 1
 
-            jets = select_valid_jets(jet_feats_all[i], jet_mask_all[i])
+            jets, orig_indices = select_valid_jets(jet_feats_all[i], jet_mask_all[i])
 
             if len(jets) < 6:
                 n_skipped_few += 1
@@ -445,7 +519,19 @@ def load_and_process(files: list, max_events: int = None, verbose: bool = False)
                 n_skipped_nan += 1
                 continue
 
-            feats, labels = process_event(jets, min_jets=6)
+            # Resolve truth groups into pT-sorted coordinates when available
+            truth_groups = None
+            if targets_g1 is not None and targets_g2 is not None:
+                orig_to_sorted = {int(orig): pos for pos, orig in enumerate(orig_indices)}
+                try:
+                    ga = tuple(sorted(orig_to_sorted[idx] for idx in targets_g1[i]))
+                    gb = tuple(sorted(orig_to_sorted[idx] for idx in targets_g2[i]))
+                    if len(ga) == 3 and len(gb) == 3:
+                        truth_groups = (ga, gb)
+                except KeyError:
+                    pass  # a truth jet was masked — fall back to PDG method
+
+            feats, labels = process_event(jets, min_jets=6, truth_groups=truth_groups)
             if feats is None:
                 n_skipped_few += 1
                 continue
