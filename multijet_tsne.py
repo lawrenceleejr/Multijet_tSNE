@@ -568,7 +568,7 @@ def load_and_process(files: list, max_events: int = None, verbose: bool = False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# t-SNE
+# Dimensionality reduction — t-SNE and UMAP
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_tsne(features: np.ndarray, perplexity: float, seed: int, n_iter: int,
@@ -621,6 +621,50 @@ def run_tsne(features: np.ndarray, perplexity: float, seed: int, n_iter: int,
     return embedding
 
 
+def run_umap(features: np.ndarray, n_neighbors: int, min_dist: float,
+             seed: int, normalize: bool = True):
+    """
+    Run UMAP on the feature matrix and return both the embedding and the
+    fitted reducer + scaler so that new (unseen) data can be transformed.
+
+    Parameters
+    ----------
+    features   : (N, F) float32
+    n_neighbors: UMAP n_neighbors (controls local vs. global structure)
+    min_dist   : UMAP min_dist   (controls point packing in 2-D)
+    seed       : random seed
+    normalize  : if True, apply StandardScaler before fitting
+
+    Returns
+    -------
+    embedding : (N, 2) float64
+    reducer   : fitted UMAP object  — call reducer.transform(X_new) for new data
+    scaler    : fitted StandardScaler (or None if normalize=False)
+    """
+    try:
+        import umap as umap_lib
+    except ImportError:
+        sys.exit("[error] umap-learn is required.  Install via: pip install umap-learn")
+
+    from sklearn.preprocessing import StandardScaler
+
+    X = features.copy().astype(np.float64)
+    scaler = None
+    if normalize:
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+
+    reducer = umap_lib.UMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        random_state=seed,
+        verbose=True,
+    )
+    embedding = reducer.fit_transform(X)
+    return embedding, reducer, scaler
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Visualisation
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -631,9 +675,21 @@ def plot_tsne(
     stats: dict,
     output_path: str,
     perplexity: float,
+    algo: str = "t-SNE",
+    algo_params: str = "",
 ):
     """
-    Produce t-SNE scatter plot with correct/wrong/ambiguous coloring.
+    Produce embedding scatter plot with correct/wrong/ambiguous coloring.
+
+    Parameters
+    ----------
+    embedding   : (N, 2) embedding coordinates
+    labels      : (N,) label array
+    stats       : summary dict from load_and_process
+    output_path : output PNG path
+    perplexity  : t-SNE perplexity (only used in title when algo="t-SNE")
+    algo        : algorithm name for axis labels and title (default "t-SNE")
+    algo_params : extra parameter string appended to the plot title
 
     Layers (back → front):
         1. Gray  — wrong interpretations
@@ -700,13 +756,12 @@ def plot_tsne(
         bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.75, edgecolor="#cccccc"),
     )
 
-    ax.set_xlabel("t-SNE component 1", fontsize=12)
-    ax.set_ylabel("t-SNE component 2", fontsize=12)
-    ax.set_title(
-        f"t-SNE of multijet interpretations\n"
-        f"perplexity={perplexity:.0f},  15 physics features per splitting",
-        fontsize=13,
-    )
+    ax.set_xlabel(f"{algo} component 1", fontsize=12)
+    ax.set_ylabel(f"{algo} component 2", fontsize=12)
+    title = f"{algo} of multijet interpretations\n15 physics features per splitting"
+    if algo_params:
+        title += f",  {algo_params}"
+    ax.set_title(title, fontsize=13)
     ax.legend(loc="upper right", markerscale=2.5, fontsize=9, framealpha=0.85)
 
     fig.tight_layout()
@@ -801,6 +856,41 @@ def export_surrogate_py(scaler, model, feature_names: list, output_path: str):
     with open(output_path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
     print(f"[done] Surrogate function written to: {output_path}")
+
+
+def export_umap_model(reducer, scaler, output_path: str):
+    """
+    Save the fitted UMAP reducer and StandardScaler to a joblib file.
+
+    The saved object is a dict {"reducer": reducer, "scaler": scaler}.
+    Load it in any Python environment with joblib and call transform():
+
+        import joblib, numpy as np
+        m = joblib.load("umap_model.joblib")
+        # new_features : (N, 15) array in FEATURE_NAMES order
+        X = m["scaler"].transform(new_features)   # apply same scaling
+        coords = m["reducer"].transform(X)         # (N, 2) UMAP coordinates
+
+    Parameters
+    ----------
+    reducer     : fitted UMAP object returned by run_umap()
+    scaler      : fitted StandardScaler returned by run_umap() (may be None)
+    output_path : destination .joblib file
+    """
+    try:
+        import joblib
+    except ImportError:
+        sys.exit("[error] joblib is required.  Install via: pip install joblib")
+
+    joblib.dump({"reducer": reducer, "scaler": scaler}, output_path)
+    print(f"[done] UMAP model saved to: {output_path}")
+    print(f"[info] To apply to new events:")
+    print(f"[info]   import joblib, numpy as np")
+    print(f"[info]   m = joblib.load({output_path!r})")
+    if scaler is not None:
+        print(f"[info]   coords = m['reducer'].transform(m['scaler'].transform(new_features))")
+    else:
+        print(f"[info]   coords = m['reducer'].transform(new_features)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -945,6 +1035,25 @@ def parse_args():
         "--verbose", action="store_true",
         help="Print per-file loading progress",
     )
+    # ── Algorithm choice ───────────────────────────────────────────────────────
+    parser.add_argument(
+        "--algo", choices=["tsne", "umap"], default="tsne",
+        help="Dimensionality-reduction algorithm (default: tsne)",
+    )
+    # UMAP options
+    parser.add_argument(
+        "--n-neighbors", type=int, default=15, metavar="N",
+        help="UMAP n_neighbors — controls local vs. global structure (default: 15)",
+    )
+    parser.add_argument(
+        "--min-dist", type=float, default=0.1, metavar="F",
+        help="UMAP min_dist — controls point packing in 2-D (default: 0.1)",
+    )
+    parser.add_argument(
+        "--umap-output", default=None, metavar="FILE.joblib",
+        help="Save fitted UMAP model (reducer + scaler) for out-of-sample transform",
+    )
+    # ── Surrogate / slice outputs ───────────────────────────────────────────────
     parser.add_argument(
         "--surrogate-output", default=None, metavar="FILE.py",
         help="Write a standalone Python surrogate function for t-SNE component 2",
@@ -996,21 +1105,44 @@ def main():
     print(f"[info]   Correct:  {n_correct:,} ({100*n_correct/len(labels):.1f}%)")
     print(f"[info]   Ambiguous:{n_ambig:,} ({100*n_ambig/len(labels):.1f}%)")
 
-    # t-SNE
-    print("\n[info] Running t-SNE...")
-    embedding = run_tsne(
-        features,
-        perplexity=args.perplexity,
-        seed=args.seed,
-        n_iter=args.n_iter,
-        normalize=not args.no_normalize,
-    )
+    # ── Dimensionality reduction ───────────────────────────────────────────────
+    umap_reducer = None
+    umap_scaler  = None
+
+    if args.algo == "umap":
+        print(f"\n[info] Running UMAP (n_neighbors={args.n_neighbors}, min_dist={args.min_dist})...")
+        embedding, umap_reducer, umap_scaler = run_umap(
+            features,
+            n_neighbors=args.n_neighbors,
+            min_dist=args.min_dist,
+            seed=args.seed,
+            normalize=not args.no_normalize,
+        )
+        algo_label  = "UMAP"
+        algo_params = f"n_neighbors={args.n_neighbors}, min_dist={args.min_dist}"
+    else:
+        print("\n[info] Running t-SNE...")
+        embedding = run_tsne(
+            features,
+            perplexity=args.perplexity,
+            seed=args.seed,
+            n_iter=args.n_iter,
+            normalize=not args.no_normalize,
+        )
+        algo_label  = "t-SNE"
+        algo_params = f"perplexity={args.perplexity:.0f}"
 
     # Plot
-    plot_tsne(embedding, labels, stats, args.output, args.perplexity)
+    plot_tsne(embedding, labels, stats, args.output,
+              perplexity=args.perplexity,
+              algo=algo_label, algo_params=algo_params)
 
-    # ── Surrogate for t-SNE component 2 ────────────────────────────────────────
-    print("\n[info] Fitting linear surrogate for t-SNE component 2...")
+    # Export UMAP model if requested
+    if args.algo == "umap" and args.umap_output:
+        export_umap_model(umap_reducer, umap_scaler, args.umap_output)
+
+    # ── Surrogate for component 2 ───────────────────────────────────────────────
+    print(f"\n[info] Fitting linear surrogate for {algo_label} component 2...")
     scaler_surr, surrogate, r2 = fit_tsne_surrogate(
         features, embedding[:, 1], FEATURE_NAMES
     )
